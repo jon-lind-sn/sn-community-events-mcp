@@ -8,10 +8,22 @@ No login or credentials are required — the underlying API is public.
 
 ## Setup
 
-Requires [`uv`](https://docs.astral.sh/uv/) installed locally (`brew install uv` on
-macOS). `uvx` fetches and runs the package straight from this repo — no manual
-cloning or dependency install needed on your end, for either client below. Both
-re-fetch from `main` on next launch, so you stay on the latest version automatically.
+All install methods below need [`uv`](https://docs.astral.sh/uv/) installed locally
+(`brew install uv` on macOS, or see the linked docs for other platforms) — it's what
+actually fetches and runs the server, so Claude has something to launch either way.
+
+### Claude Desktop Extension (no config editing — best for non-technical users)
+
+1. Install `uv` (above), if you haven't already.
+2. Download `sn-community-events-mcp.mcpb` from the
+   [latest release](https://github.com/jon-lind-sn/sn-community-events-mcp/releases/latest).
+3. In Claude Desktop: **Settings → Extensions**, then install/drag in the downloaded
+   `.mcpb` file.
+
+This is the exact same server as the other install methods below, running the same
+`uvx --from git+...` command under the hood — just packaged so Desktop can register
+it without anyone hand-editing a config file. It re-fetches `main` on every launch
+just like the other methods, so no separate update step is needed later.
 
 ### Claude Code
 
