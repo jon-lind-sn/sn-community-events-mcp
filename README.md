@@ -6,16 +6,6 @@ for a date range and returns them as structured data, optionally also writing a 
 
 No login or credentials are required — the underlying API is public.
 
-## Why this is an MCP server and not a Claude Desktop Skill
-
-Skills that run code in Claude Desktop execute inside a sandboxed code-execution
-environment that sits behind an org-managed network egress allowlist. If your org's
-allowlist doesn't include `www.servicenow.com`, a Skill making this same request will
-fail with `x-deny-reason: host_not_allowed`. An MCP server instead runs as a local
-subprocess on your own machine and uses your machine's real network, so it isn't
-subject to that sandbox's allowlist. If your org *does* allow that domain, either
-approach works — this one is just the one guaranteed to work regardless.
-
 ## Setup
 
 Requires [`uv`](https://docs.astral.sh/uv/) installed locally (`brew install uv` on
