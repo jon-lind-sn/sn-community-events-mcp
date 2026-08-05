@@ -1,0 +1,91 @@
+# sn-community-events-mcp
+
+MCP server that fetches ServiceNow Community events (SNUGs, webinars, World Forum
+stops, etc. from https://www.servicenow.com/community/events/ct-p/TopLevel_Events)
+for a date range and returns them as structured data, optionally also writing a CSV.
+
+No login or credentials are required — the underlying API is public.
+
+## Why this is an MCP server and not a Claude Desktop Skill
+
+Skills that run code in Claude Desktop execute inside a sandboxed code-execution
+environment that sits behind an org-managed network egress allowlist. If your org's
+allowlist doesn't include `www.servicenow.com`, a Skill making this same request will
+fail with `x-deny-reason: host_not_allowed`. An MCP server instead runs as a local
+subprocess on your own machine and uses your machine's real network, so it isn't
+subject to that sandbox's allowlist. If your org *does* allow that domain, either
+approach works — this one is just the one guaranteed to work regardless.
+
+## Setup
+
+Requires [`uv`](https://docs.astral.sh/uv/) installed locally (`brew install uv` on
+macOS). `uvx` fetches and runs the package straight from this repo — no manual
+cloning or dependency install needed on your end, for either client below. Both
+re-fetch from `main` on next launch, so you stay on the latest version automatically.
+
+### Claude Code
+
+```bash
+claude mcp add sn-community-events -- uvx --from git+https://github.com/jon-lind-sn/sn-community-events-mcp sn-community-events-mcp
+```
+
+This registers the server at the user level (available in every project). To scope it
+to just the current project instead, add `--scope project` before the `--`, which
+writes the entry to `.mcp.json` in the current directory instead of your global config.
+
+Verify it's registered with `claude mcp list`, and check connectivity with
+`claude mcp get sn-community-events`.
+
+### Claude Desktop
+
+Add this to your Desktop config
+(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "sn-community-events": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/jon-lind-sn/sn-community-events-mcp",
+        "sn-community-events-mcp"
+      ]
+    }
+  }
+}
+```
+
+Restart Claude Desktop for it to pick up the new server.
+
+## Tool: `get_community_events`
+
+| Argument | Required | Description |
+|---|---|---|
+| `start_date` | yes | Inclusive start of the date range, `YYYY-MM-DD` |
+| `end_date` | yes | Inclusive end of the date range, `YYYY-MM-DD` |
+| `status_category` | no | Filter slug. Only `upcoming` is confirmed to work reliably. |
+| `location_category` | no | e.g. `in-person`, `virtual`, `hybrid` |
+| `product_category` | no | e.g. `app-engine` (slugified UI label) |
+| `type_category` | no | e.g. `webinar`, `workshop`, `academy`, `office-hours` |
+| `include_full_description` | no, default `true` | Fetch each event's own page for its full description instead of the listing's truncated blurb. One extra HTTP request per matched event — set `false` for wide date ranges. |
+| `save_csv_path` | no | If given, also write results to a CSV at this local path. |
+
+Returns `{"events": [...], "meta": {...}}`. `meta` includes counts worth surfacing to
+the user (how many events matched, how many full descriptions were/weren't fetched,
+etc.).
+
+## Development notes
+
+All fetch/parse logic is in `src/sn_community_events_mcp/core.py` — read its
+docstrings before changing anything. The short version: the API's `page` query
+param is silently ignored (pagination is a keyset cursor via `cursor-k`/`cursor-b`
+instead), and its own result-count fields are unreliable. Both cost real debugging
+time to work out originally.
+
+To run locally for development:
+
+```bash
+uv sync
+uv run sn-community-events-mcp
+```
