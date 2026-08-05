@@ -28,25 +28,45 @@ Verify it's registered with `claude mcp list`, and check connectivity with
 
 ### Claude Desktop
 
-Add this to your Desktop config
-(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+1. Install `uv` and open the config file:
 
-```json
-{
-  "mcpServers": {
-    "sn-community-events": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/jon-lind-sn/sn-community-events-mcp",
-        "sn-community-events-mcp"
-      ]
-    }
-  }
-}
-```
+   **macOS**
 
-Restart Claude Desktop for it to pick up the new server.
+   ```bash
+   brew install uv
+   open -e ~"/Library/Application Support/Claude/claude_desktop_config.json"
+   ```
+
+   **Windows**
+
+   ```powershell
+   winget install --id=astral-sh.uv -e
+   notepad "$env:APPDATA\Claude\claude_desktop_config.json"
+   ```
+
+2. Add the `sn-community-events` entry below.
+
+   - If the file already has an `mcpServers` key, add `sn-community-events` as a new
+     entry inside it, alongside whatever's already there:
+
+     ```json
+     {
+       "mcpServers": {
+         "sn-community-events": {
+           "command": "uvx",
+           "args": [
+             "--from",
+             "git+https://github.com/jon-lind-sn/sn-community-events-mcp",
+             "sn-community-events-mcp"
+           ]
+         }
+       }
+     }
+     ```
+
+   - If the file is empty or has no `mcpServers` key, paste the whole block above in as-is.
+
+3. Restart Claude Desktop for it to pick up the new server.
 
 ## Tool: `get_community_events`
 
