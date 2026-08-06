@@ -64,7 +64,7 @@ Verify it's registered with `claude mcp list`, and check connectivity with
      }
      ```
 
-   - If the file is empty or has no `mcpServers` key, paste the whole block above in as-is.
+   - If the file is empty paste in the whole block above as-is.  If there is no `mcpServers` key, copy it and its content at the top of the file after the first curly brace.
 
 3. Restart Claude Desktop for it to pick up the new server.
 
