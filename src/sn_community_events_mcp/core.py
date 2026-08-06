@@ -15,10 +15,40 @@ import json
 import re
 import subprocess
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 BASE = "https://www.servicenow.com/community/s/plugins/custom/servicenow/servicenow"
+SOURCE_URL = "https://www.servicenow.com/community/events/ct-p/TopLevel_Events"
 PAGE_SIZE = 100
+
+# The real facet values, pulled from the filter widget config embedded in the events
+# page HTML (view-source on SOURCE_URL, look for `filter-group-html`) -- they're
+# exact-case Title strings with spaces, NOT the lowercase-hyphenated slugs one might
+# guess (e.g. "In Person", "SNUGs"), which is why guesses like "in-person"/"snug" were
+# silently going nowhere server-side. product-category isn't included here: its list
+# is long and open-ended, so callers are expected to pass/slugify their own value.
+LOCATION_CATEGORY_VALUES = ["In Person", "Virtual", "Hybrid"]
+STATUS_CATEGORY_VALUES = ["ongoing", "upcoming", "past", "on-demand"]
+TYPE_CATEGORY_VALUES = [
+    "Webinar", "360 Exchange", "Office Hours", "Workshop", "Academy",
+    "SNUGs", "Ask the Experts", "Developer Meetups",
+]
+
+
+def normalize_facet_value(value, canonical_values):
+    """Best-effort map a caller-supplied filter value onto the API's real facet value
+    (see the *_CATEGORY_VALUES lists above), matching case/hyphen/underscore-
+    insensitively so a natural guess like "in-person" or "snugs" still resolves to the
+    real "In Person" / "SNUGs". Falls back to the original value unchanged if nothing
+    matches, rather than raising -- these filters are unvalidated pass-through, so an
+    unmatched guess just fails the same way it always has."""
+    norm = lambda s: s.lower().replace("-", " ").replace("_", " ").strip()
+    target = norm(value)
+    for canon in canonical_values:
+        if norm(canon) == target:
+            return canon
+    return value
 
 MONTHS = {
     m: i + 1
@@ -133,6 +163,35 @@ def get_token():
     return curl_get_json(f"{BASE}/get-sn-token?tid={tid}")["accessToken"]
 
 
+def dedup_key(fields):
+    """Secondary dedupe key for cross-posted duplicates that get distinct detail
+    URLs (e.g. the same event re-posted under a slightly different URL slug).
+    Primary dedupe is still on exact url; this is a fallback on normalized
+    title + date. Deliberately excludes location -- observed duplicate postings
+    of the identical event sometimes carry slightly different location text (e.g.
+    one adds a room number the other omits), so requiring an exact location match
+    would let those duplicates slip back through."""
+    return (fields["title"].strip().lower(), fields["parsed_date"])
+
+
+def matches_type_category_text(fields, type_category):
+    """Case-insensitive substring match of a type-category value against an event's
+    own category/title text (e.g. "SNUGs" against category "Copenhagen SNUG"). Used
+    as a client-side supplement -- see the "type-category facet" gotcha in
+    fetch_events()'s docstring for why the server-side filter alone isn't enough.
+    Also tries the singular form (stripping one trailing "s") since the real facet
+    value is plural ("SNUGs") but community-group category text is singular ("...
+    SNUG")."""
+    phrase = type_category.replace("-", " ").replace("_", " ").strip().lower()
+    if not phrase:
+        return False
+    candidates = {phrase}
+    if phrase.endswith("s"):
+        candidates.add(phrase[:-1])
+    haystacks = (fields["category"].lower(), fields["title"].lower())
+    return any(c in h for c in candidates for h in haystacks)
+
+
 def fetch_page(token, filters, cursor_k=None, cursor_b=None):
     params = {
         "pageSize": PAGE_SIZE,
@@ -171,41 +230,32 @@ def parse_card(card_html):
         m = rx.search(card_html)
         fields[key] = strip_tags(m.group(1)) if m else ""
     fields["parsed_date"] = parse_date(fields["date_text"])
+    # Best-effort only: the card HTML carries no explicit virtual/in-person/hybrid
+    # signal (and the API's own location-category facet has been observed to be
+    # unreliable, mirroring the type-category gotcha above). A URL in `location`
+    # (a Zoom/registration link) reliably means virtual; real address text reliably
+    # means in-person -- but an EMPTY location is genuinely ambiguous: plenty of
+    # in-person meetups (confirmed empirically) omit the address just as often as
+    # virtual ones omit a link. Guessing either way there would be confidently
+    # wrong, so that case is "unknown" rather than defaulted to virtual.
+    loc = fields["location"]
+    if loc.startswith("http"):
+        fields["location_type"] = "virtual"
+    elif loc:
+        fields["location_type"] = "in-person"
+    else:
+        fields["location_type"] = "unknown"
     return fields
 
 
-def fetch_events(start, end, filters=None, full_description=True, max_pages=500):
-    """Fetch community events between `start` and `end` (inclusive `date` objects).
-
-    filters: dict of optional {status-category, location-category, product-category,
-    type-category} slug values, passed straight through to the API as query params.
-
-    Returns (events, meta) where events is a list of dicts with keys:
-    category, title, description, date_text, parsed_date (a `date`), location, url.
-    meta is a dict of counters useful for reporting back to the caller (hops fetched,
-    unparsed dates skipped, full descriptions fetched/unavailable).
-
-    Gotchas worth knowing before changing this function:
-    - The page's own "Showing 9,XXX results" counter and this API's total-pages/
-      total-results fields come from an unrelated search index -- don't trust them.
-    - The API's `page` query parameter is silently ignored; every request with the
-      same pageSize and no cursor returns the identical top-N rows. Real pagination
-      is a keyset cursor: feed cursor-k/cursor-b from a response back into the next
-      request under those same field names to advance; omit both to restart at the top.
-    - Results are sorted by event date descending (soonest-future first, walking
-      backward through time as you page) -- this is what makes the early-exit below
-      correct: once every date on a hop is older than `start`, nothing further out
-      will ever be newer.
-    - Some filtered queries return a non-empty cursor-k with an EMPTY cursor-b once
-      the filtered result set is exhausted; resubmitting that pair 400s rather than
-      cleanly signaling "no more data" -- treat an empty cursor-b as end-of-results.
-    - The same event occasionally gets cross-posted to multiple community groups and
-      shows up as a duplicate card with an identical detail URL -- dedupe on url.
-    """
-    filters = filters or {}
-    token = get_token()
+def _fetch_matches(token, start, end, filters, max_pages):
+    """Page through post.db-events for `filters`, returning (matches, hops, skipped_unparsed).
+    No full-description fetching or type-category keyword supplementing here -- just the
+    raw paginate-and-collect loop, shared by both the primary and supplemental fetches in
+    fetch_events()."""
     matches = []
     seen_urls = set()
+    seen_keys = set()
     skipped_unparsed = 0
     cursor_k, cursor_b = None, None
     hop = 0
@@ -227,11 +277,13 @@ def fetch_events(start, end, filters=None, full_description=True, max_pages=500)
                 skipped_unparsed += 1
                 continue
             hop_dates.append(d)
-            if fields["url"] in seen_urls:
+            key = dedup_key(fields)
+            if fields["url"] in seen_urls or key in seen_keys:
                 continue
             if start <= d <= end:
                 matches.append(fields)
                 seen_urls.add(fields["url"])
+                seen_keys.add(key)
 
         if hop_dates and max(hop_dates) < start:
             break
@@ -245,13 +297,79 @@ def fetch_events(start, end, filters=None, full_description=True, max_pages=500)
         if hop > max_pages:
             break
 
+    return matches, hop, skipped_unparsed
+
+
+def fetch_events(start, end, filters=None, full_description=True, max_pages=500):
+    """Fetch community events between `start` and `end` (inclusive `date` objects).
+
+    filters: dict of optional {status-category, location-category, product-category,
+    type-category} slug values, passed straight through to the API as query params.
+
+    Returns (events, meta) where events is a list of dicts with keys:
+    category, title, description, date_text, parsed_date (a `date`), location, url.
+    meta is a dict of counters useful for reporting back to the caller (hops fetched,
+    unparsed dates skipped, full descriptions fetched/unavailable, type-category
+    keyword-supplement matches added).
+
+    Gotchas worth knowing before changing this function:
+    - The page's own "Showing 9,XXX results" counter and this API's total-pages/
+      total-results fields come from an unrelated search index -- don't trust them.
+    - The API's `page` query parameter is silently ignored; every request with the
+      same pageSize and no cursor returns the identical top-N rows. Real pagination
+      is a keyset cursor: feed cursor-k/cursor-b from a response back into the next
+      request under those same field names to advance; omit both to restart at the top.
+    - Results are sorted by event date descending (soonest-future first, walking
+      backward through time as you page) -- this is what makes the early-exit below
+      correct: once every date on a hop is older than `start`, nothing further out
+      will ever be newer.
+    - Some filtered queries return a non-empty cursor-k with an EMPTY cursor-b once
+      the filtered result set is exhausted; resubmitting that pair 400s rather than
+      cleanly signaling "no more data" -- treat an empty cursor-b as end-of-results.
+    - The same event occasionally gets cross-posted to multiple community groups and
+      shows up as a duplicate card -- usually with an identical detail URL, but
+      sometimes with a distinct one (e.g. a "-1" suffix variant), so dedupe on url
+      AND on a normalized title+date+location key (see dedup_key()).
+    - The `type-category` facet (e.g. "snug", "webinar") is its OWN tag, independent
+      of an event's `category` text (its community group name, e.g. "Federal and
+      U.S. Public Sector SNUG"). It is NOT "every event posted under a SNUG group" --
+      confirmed empirically: `type-category=snug` returns only a couple of events
+      explicitly tagged that way, while dozens of other genuinely SNUG-group events
+      in the same window carry some other type-category tag entirely. Relying on the
+      server-side facet alone silently undercounts. To compensate, when a
+      `type-category` filter is given we ALSO run an unfiltered (by type-category)
+      fetch of the same window and keyword-match the slug against `category`/`title`
+      text (matches_type_category_text()), merging in anything the facet missed.
+    """
+    filters = filters or {}
+    token = get_token()
+
+    matches, hop, skipped_unparsed = _fetch_matches(token, start, end, filters, max_pages)
+
+    keyword_matches_added = 0
+    type_category = filters.get("type-category")
+    if type_category:
+        seen_urls = {m["url"] for m in matches}
+        seen_keys = {dedup_key(m) for m in matches}
+        broader_filters = {k: v for k, v in filters.items() if k != "type-category"}
+        broader_matches, _, _ = _fetch_matches(token, start, end, broader_filters, max_pages)
+        for fields in broader_matches:
+            if fields["url"] in seen_urls or dedup_key(fields) in seen_keys:
+                continue
+            if matches_type_category_text(fields, type_category):
+                matches.append(fields)
+                seen_urls.add(fields["url"])
+                seen_keys.add(dedup_key(fields))
+                keyword_matches_added += 1
+
     matches.sort(key=lambda f: f["parsed_date"])
 
     full_desc_fetched = 0
     full_desc_unavailable = 0
-    if full_description:
-        for m in matches:
-            full = fetch_full_description(m["url"])
+    if full_description and matches:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            fulls = list(pool.map(fetch_full_description, [m["url"] for m in matches]))
+        for m, full in zip(matches, fulls):
             if full:
                 m["description"] = full
                 full_desc_fetched += 1
@@ -264,6 +382,7 @@ def fetch_events(start, end, filters=None, full_description=True, max_pages=500)
         "skipped_unparsed_dates": skipped_unparsed,
         "full_descriptions_fetched": full_desc_fetched,
         "full_descriptions_unavailable": full_desc_unavailable,
+        "type_category_keyword_matches_added": keyword_matches_added,
     }
     return matches, meta
 
