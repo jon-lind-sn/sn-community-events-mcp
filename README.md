@@ -87,12 +87,6 @@ etc.).
 
 ## Development notes
 
-All fetch/parse logic is in `src/sn_community_events_mcp/core.py` — read its
-docstrings before changing anything. The short version: the API's `page` query
-param is silently ignored (pagination is a keyset cursor via `cursor-k`/`cursor-b`
-instead), and its own result-count fields are unreliable. Both cost real debugging
-time to work out originally.
-
 To run locally for development:
 
 ```bash
