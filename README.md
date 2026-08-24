@@ -6,6 +6,11 @@ for a date range and returns them as structured data, optionally also writing a 
 
 No login or credentials are required — the underlying API is public.
 
+### Example prompts
+
+- "What ServiceNow community events are happening in the next 30 days?"
+- "Find upcoming virtual webinars about App Engine in Q3 and save them to a CSV."
+
 ## Setup
 
 Requires [`uv`](https://docs.astral.sh/uv/) installed locally (`brew install uv` on
