@@ -10,6 +10,11 @@ No login or credentials are required — the underlying API is public.
 
 - "What ServiceNow community events are happening in the next 30 days?"
 - "Find upcoming virtual webinars about App Engine in Q3 and save them to a CSV."
+- "Give me the full details for the SNUGs in the next two weeks."
+
+Note: Requesting full details individually fetches each matched event's page for its complete
+description and is drastically slower. When adding "include details" in your prompt try to use
+smaller date ranges and more narrow queries for faster responses.
 
 ## Setup
 
@@ -83,7 +88,7 @@ Verify it's registered with `claude mcp list`, and check connectivity with
 | `location_category` | no | e.g. `in-person`, `virtual`, `hybrid` |
 | `product_category` | no | e.g. `app-engine` (slugified UI label) |
 | `type_category` | no | e.g. `webinar`, `workshop`, `academy`, `office-hours` |
-| `include_full_description` | no, default `true` | Fetch each event's own page for its full description instead of the listing's truncated blurb. One extra HTTP request per matched event — set `false` for wide date ranges. |
+| `include_full_description` | no, default `false` | Fetch each event's own page for its full description instead of the listing's truncated blurb. One extra HTTP request per matched event — only set `true` for small date ranges or narrow filters. |
 | `save_csv_path` | no | If given, also write results to a CSV at this local path. |
 
 Returns `{"events": [...], "meta": {...}}`. `meta` includes counts worth surfacing to
